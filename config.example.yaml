@@ -1,0 +1,37 @@
+server:
+  bind_host: "0.0.0.0"
+  bind_port: 8080
+  base_url: "http://127.0.0.1:8080"
+  log_level: "INFO"
+
+storage:
+  database_url: "sqlite:///./relay.db"
+
+discord_bots:
+  - id: "discord_a"
+    name: "Discord Bot A"
+    token_env: "DISCORD_TOKEN_A"
+    enabled: true
+    channel_allowlist:
+      - "123456789012345678"
+
+backend_bots:
+  - id: "backend_alpha"
+    name: "Backend Alpha"
+    api_key: "dev-only-change-me"
+    enabled: true
+
+routing:
+  mode: "first_match"
+  defaults:
+    discord_a: "backend_alpha"
+
+routes:
+  - discord_bot_id: "discord_a"
+    scope_type: "dm_user"
+    scope_id: "111111111111111111"
+    backend_bot_id: "backend_alpha"
+  - discord_bot_id: "discord_a"
+    scope_type: "channel"
+    scope_id: "123456789012345678"
+    backend_bot_id: "backend_alpha"
