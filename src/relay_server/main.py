@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -15,9 +16,20 @@ from .config import AppConfig, ConfigError, DiscordBotConfig, LoadedConfig, load
 from .discord_client import Destination as DiscordDestination
 from .discord_client import DiscordManager
 from .models import create_session_factory
-from .queue import DeliveryRecord, DiscordMessageRecord, QueueService
+from .queue import (
+    DeliveryRecord,
+    DiscordMessageRecord,
+    LeasedDeliveryRecord,
+    QueueService,
+)
 from .routing import MessageContext, RoutingTable
 from .schemas import (
+    AckRequest,
+    DiscordMessagePayload,
+    LeaseMessagesRequest,
+    LeaseMessagesResponse,
+    LeasedMessage,
+    NackRequest,
     PendingMessage,
     PendingMessagesResponse,
     SendMessageRequest,
@@ -47,7 +59,9 @@ def create_state(config_path: Optional[str] = None) -> RelayState:
         for bot in loaded.data.backend_bots
         if bot.enabled and bot.webhook is not None
     }
-    queue_service = QueueService(session_factory, webhook_debounce_seconds=webhook_debounce_seconds)
+    queue_service = QueueService(
+        session_factory, webhook_debounce_seconds=webhook_debounce_seconds
+    )
     routing = RoutingTable(loaded.data)
     auth_service = AuthService(loaded.data)
     discord_manager = DiscordManager(loaded.data, routing, queue_service)
@@ -58,7 +72,9 @@ def create_state(config_path: Optional[str] = None) -> RelayState:
         if bot.enabled and bot.webhook is not None
     }
     webhook_dispatcher = (
-        WebhookDispatcher(session_factory, backend_webhooks) if backend_webhooks else None
+        WebhookDispatcher(session_factory, backend_webhooks)
+        if backend_webhooks
+        else None
     )
 
     return RelayState(
@@ -80,6 +96,17 @@ def create_app(
 ) -> FastAPI:
     state = create_state(config_path)
 
+    async def reap_expired_leases():
+        """Periodic task to reap expired leases."""
+        while True:
+            try:
+                reaped_count = await state.queue_service.reap_expired_leases()
+                if reaped_count > 0:
+                    LOG.info("Reaped %d expired leases", reaped_count)
+            except Exception as exc:
+                LOG.exception("Error reaping expired leases: %s", exc)
+            await asyncio.sleep(60)  # Run every 60 seconds
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         logging.basicConfig(
@@ -92,6 +119,10 @@ def create_app(
             LOG.info("Skipping Discord startup (start_discord=False)")
         if start_webhooks and state.webhook_dispatcher:
             await state.webhook_dispatcher.start()
+
+        # Start lease reaper task
+        reaper_task = asyncio.create_task(reap_expired_leases())
+
         LOG.info(
             "Relay server started using config %s",
             state.loaded_config.path,
@@ -99,6 +130,13 @@ def create_app(
         try:
             yield
         finally:
+            # Cancel lease reaper task
+            reaper_task.cancel()
+            try:
+                await reaper_task
+            except asyncio.CancelledError:
+                pass
+
             if start_discord:
                 await state.discord_manager.stop()
             if start_webhooks and state.webhook_dispatcher:
@@ -120,11 +158,15 @@ def create_app(
         authorization: Annotated[Optional[str], Header(alias="Authorization")] = None,
     ) -> BackendIdentity:
         if not authorization or not authorization.lower().startswith("bearer "):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+            )
         api_key = authorization.split(" ", 1)[1].strip()
         backend = request.app.state.relay_state.auth_service.authenticate(api_key)
         if not backend:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+            )
         return backend
 
     @app.get("/v1/health")
@@ -144,7 +186,9 @@ def create_app(
         backend: BackendIdentity = Depends(get_backend_identity),
         relay_state: RelayState = Depends(get_state),
     ) -> PendingMessagesResponse:
-        deliveries = await relay_state.queue_service.fetch_and_mark_delivered(backend.id, limit)
+        deliveries = await relay_state.queue_service.fetch_and_mark_delivered(
+            backend.id, limit
+        )
         response = PendingMessagesResponse(
             messages=[_delivery_to_schema(record) for record in deliveries]
         )
@@ -177,11 +221,66 @@ def create_app(
                 payload.content,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
         return SendMessageResponse(
             discord_message_id=message_id,
             channel_id=payload.destination.channel_id,
         )
+
+    @app.post(
+        "/v1/messages/lease",
+        response_model=LeaseMessagesResponse,
+    )
+    async def lease_messages(
+        payload: LeaseMessagesRequest,
+        backend: BackendIdentity = Depends(get_backend_identity),
+        relay_state: RelayState = Depends(get_state),
+    ) -> LeaseMessagesResponse:
+        (
+            leased_records,
+            conversation_history,
+        ) = await relay_state.queue_service.lease_messages(
+            backend.id,
+            payload.limit,
+            payload.lease_seconds,
+            payload.include_conversation_history,
+            payload.conversation_history_limit,
+        )
+
+        response = LeaseMessagesResponse(
+            messages=[_leased_delivery_to_schema(record) for record in leased_records],
+        )
+
+        if payload.include_conversation_history and conversation_history:
+            response.conversation_history = [
+                _message_record_to_schema(record) for record in conversation_history
+            ]
+
+        return response
+
+    @app.post("/v1/messages/ack")
+    async def acknowledge_messages(
+        payload: AckRequest,
+        backend: BackendIdentity = Depends(get_backend_identity),
+        relay_state: RelayState = Depends(get_state),
+    ) -> dict[str, int]:
+        count = await relay_state.queue_service.acknowledge_deliveries(
+            backend.id, payload.delivery_ids, payload.lease_id
+        )
+        return {"acknowledged_count": count}
+
+    @app.post("/v1/messages/nack")
+    async def negative_acknowledge_messages(
+        payload: NackRequest,
+        backend: BackendIdentity = Depends(get_backend_identity),
+        relay_state: RelayState = Depends(get_state),
+    ) -> dict[str, int]:
+        count = await relay_state.queue_service.negative_acknowledge_deliveries(
+            backend.id, payload.delivery_ids, payload.lease_id, payload.reason
+        )
+        return {"nacked_count": count}
 
     return app
 
@@ -208,6 +307,47 @@ def _delivery_to_schema(record: DeliveryRecord) -> PendingMessage:
     )
 
 
+def _leased_delivery_to_schema(record: LeasedDeliveryRecord) -> LeasedMessage:
+    msg: DiscordMessageRecord = record.message
+    source = {
+        "is_dm": msg.is_dm,
+        "guild_id": msg.guild_id,
+        "channel_id": msg.channel_id,
+        "author_id": msg.author_id,
+        "author_name": msg.author_name,
+    }
+    return LeasedMessage(
+        delivery_id=record.delivery_id,
+        lease_id=record.lease_id,
+        discord_bot_id=msg.discord_bot_id,
+        discord_message={
+            "discord_message_id": msg.discord_message_id,
+            "discord_bot_id": msg.discord_bot_id,
+            "timestamp": msg.timestamp,
+            "content": msg.content,
+            "source": source,
+        },
+        lease_expires_at=record.lease_expires_at,
+    )
+
+
+def _message_record_to_schema(record: DiscordMessageRecord) -> DiscordMessagePayload:
+    source = {
+        "is_dm": record.is_dm,
+        "guild_id": record.guild_id,
+        "channel_id": record.channel_id,
+        "author_id": record.author_id,
+        "author_name": record.author_name,
+    }
+    return DiscordMessagePayload(
+        discord_message_id=record.discord_message_id,
+        discord_bot_id=record.discord_bot_id,
+        timestamp=record.timestamp,
+        content=record.content,
+        source=source,
+    )
+
+
 def _build_default_app() -> FastAPI:
     config_path = os.getenv("RELAY_CONFIG")
     try:
@@ -226,7 +366,9 @@ def _build_default_app() -> FastAPI:
             )
             yield  # pragma: no cover
 
-        placeholder = FastAPI(title="Discord Relay (config error)", lifespan=fail_lifespan)
+        placeholder = FastAPI(
+            title="Discord Relay (config error)", lifespan=fail_lifespan
+        )
 
         return placeholder
 

@@ -1,2 +1,4 @@
-plans
-__pycache__
+ plans
+ __pycache__
+ */__pycache__
+ *.egg-info/

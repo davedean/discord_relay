@@ -93,6 +93,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     _build_retrieve_parser(subparsers)
     _build_send_parser(subparsers)
+    _build_lease_parser(subparsers)
+    _build_ack_parser(subparsers)
+    _build_nack_parser(subparsers)
     return parser.parse_args(argv)
 
 
@@ -108,7 +111,9 @@ def _build_retrieve_parser(subparsers: argparse._SubParsersAction) -> None:  # t
 
 
 def _build_send_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
-    parser = subparsers.add_parser("send", help="Send a message on behalf of a backend bot.")
+    parser = subparsers.add_parser(
+        "send", help="Send a message on behalf of a backend bot."
+    )
     parser.add_argument(
         "--discord-bot-id",
         required=True,
@@ -124,6 +129,76 @@ def _build_send_parser(subparsers: argparse._SubParsersAction) -> None:  # type:
     )
     parser.add_argument("--reply-to", help="Discord message ID to reply to.")
     parser.set_defaults(command="send")
+
+
+def _build_lease_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
+    parser = subparsers.add_parser(
+        "lease", help="Lease pending messages for processing."
+    )
+    parser.add_argument(
+        "--limit",
+        type=_parse_limit,
+        default=50,
+        help="Maximum number of messages to lease (1-100, default 50).",
+    )
+    parser.add_argument(
+        "--lease-seconds",
+        type=_parse_lease_seconds,
+        default=300,
+        help="Lease duration in seconds (1-3600, default 300).",
+    )
+    parser.add_argument(
+        "--include-history",
+        action="store_true",
+        help="Include conversation history in the response.",
+    )
+    parser.add_argument(
+        "--history-limit",
+        type=_parse_history_limit,
+        default=20,
+        help="Maximum conversation history messages (1-100, default 20).",
+    )
+    parser.set_defaults(command="lease")
+
+
+def _build_ack_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
+    parser = subparsers.add_parser(
+        "ack", help="Acknowledge successful processing of leased messages."
+    )
+    parser.add_argument(
+        "--delivery-ids",
+        required=True,
+        nargs="+",
+        help="Delivery IDs to acknowledge.",
+    )
+    parser.add_argument(
+        "--lease-id",
+        required=True,
+        help="Lease ID for the deliveries being acknowledged.",
+    )
+    parser.set_defaults(command="ack")
+
+
+def _build_nack_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
+    parser = subparsers.add_parser(
+        "nack", help="Negative acknowledge failed processing of leased messages."
+    )
+    parser.add_argument(
+        "--delivery-ids",
+        required=True,
+        nargs="+",
+        help="Delivery IDs to nack.",
+    )
+    parser.add_argument(
+        "--lease-id",
+        required=True,
+        help="Lease ID for the deliveries being nacked.",
+    )
+    parser.add_argument(
+        "--reason",
+        help="Optional reason for the nack.",
+    )
+    parser.set_defaults(command="nack")
 
 
 def _parse_limit(value: str) -> int:
@@ -144,6 +219,26 @@ def _parse_positive_float(value: str) -> float:
     if timeout <= 0:
         raise argparse.ArgumentTypeError("timeout must be positive")
     return timeout
+
+
+def _parse_lease_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("lease-seconds must be an integer") from exc
+    if not (1 <= seconds <= 3600):
+        raise argparse.ArgumentTypeError("lease-seconds must be between 1 and 3600")
+    return seconds
+
+
+def _parse_history_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("history-limit must be an integer") from exc
+    if not (1 <= limit <= 100):
+        raise argparse.ArgumentTypeError("history-limit must be between 1 and 100")
+    return limit
 
 
 def resolve_connection(
@@ -200,7 +295,9 @@ def resolve_connection(
     return ConnectionSettings(base_url=base_url, api_key=api_key, backend_id=backend_id)
 
 
-def _build_headers(settings: ConnectionSettings, request_id: Optional[str]) -> dict[str, str]:
+def _build_headers(
+    settings: ConnectionSettings, request_id: Optional[str]
+) -> dict[str, str]:
     headers = {"Authorization": f"Bearer {settings.api_key}"}
     if request_id:
         headers["X-Request-Id"] = request_id
@@ -257,6 +354,39 @@ def _print_human_send(payload: Mapping[str, object]) -> None:
     print(f"Sent {discord_id} (channel={channel_id})")
 
 
+def _print_human_lease(payload: Mapping[str, object]) -> None:
+    messages = payload.get("messages", [])
+    if not messages:
+        print("No messages leased.")
+        return
+    history = payload.get("conversation_history", [])
+    print(f"Leased {len(messages)} message(s)")
+    if history:
+        print(f" (with {len(history)} conversation history message(s))")
+    else:
+        print()
+    for message in messages:
+        delivery_id = message.get("delivery_id")
+        discord = message.get("discord_message") or {}
+        content = discord.get("content")
+        author = discord.get("source", {}).get("author_name", "unknown")
+        lease_id = message.get("lease_id")
+        expires = message.get("lease_expires_at")
+        print(
+            f"- {delivery_id}: {content!r} (from {author}, lease={lease_id}, expires={expires})"
+        )
+
+
+def _print_human_ack(payload: Mapping[str, object]) -> None:
+    acknowledged = payload.get("acknowledged_count", 0)
+    print(f"Acknowledged {acknowledged} message(s)")
+
+
+def _print_human_nack(payload: Mapping[str, object]) -> None:
+    nacked = payload.get("nacked_count", 0)
+    print(f"Nacked {nacked} message(s)")
+
+
 def _handle_request_exception(exc: httpx.RequestError) -> int:
     print(f"Request error: {exc}", file=sys.stderr)
     return EXIT_NETWORK
@@ -267,7 +397,10 @@ def _run_command(args: argparse.Namespace, settings: ConnectionSettings) -> int:
     try:
         with httpx.Client(base_url=settings.base_url, timeout=args.timeout) as client:
             if args.command == "retrieve":
-                _log(f"Retrieving up to {args.limit} pending messages...", quiet=args.quiet)
+                _log(
+                    f"Retrieving up to {args.limit} pending messages...",
+                    quiet=args.quiet,
+                )
                 response = client.get(
                     "/v1/messages/pending",
                     headers=headers,
@@ -311,6 +444,75 @@ def _run_command(args: argparse.Namespace, settings: ConnectionSettings) -> int:
                         _print_json(data, args.pretty)
                     else:
                         _print_human_send(data)
+                    return EXIT_SUCCESS
+                return _handle_response_error(response)
+
+            if args.command == "lease":
+                payload = {
+                    "limit": args.limit,
+                    "lease_seconds": args.lease_seconds,
+                    "include_conversation_history": args.include_history,
+                    "conversation_history_limit": args.history_limit,
+                }
+                _log(f"Leasing up to {args.limit} messages...", quiet=args.quiet)
+                response = client.post(
+                    "/v1/messages/lease",
+                    headers=headers,
+                    json=payload,
+                )
+                if response.is_success:
+                    data = response.json()
+                    if args.json_output:
+                        _print_json(data, args.pretty)
+                    else:
+                        _print_human_lease(data)
+                    return EXIT_SUCCESS
+                return _handle_response_error(response)
+
+            if args.command == "ack":
+                payload = {
+                    "delivery_ids": args.delivery_ids,
+                    "lease_id": args.lease_id,
+                }
+                _log(
+                    f"Acknowledging {len(args.delivery_ids)} message(s)...",
+                    quiet=args.quiet,
+                )
+                response = client.post(
+                    "/v1/messages/ack",
+                    headers=headers,
+                    json=payload,
+                )
+                if response.is_success:
+                    data = response.json()
+                    if args.json_output:
+                        _print_json(data, args.pretty)
+                    else:
+                        _print_human_ack(data)
+                    return EXIT_SUCCESS
+                return _handle_response_error(response)
+
+            if args.command == "nack":
+                payload = {
+                    "delivery_ids": args.delivery_ids,
+                    "lease_id": args.lease_id,
+                }
+                if args.reason:
+                    payload["reason"] = args.reason
+                _log(
+                    f"Nacking {len(args.delivery_ids)} message(s)...", quiet=args.quiet
+                )
+                response = client.post(
+                    "/v1/messages/nack",
+                    headers=headers,
+                    json=payload,
+                )
+                if response.is_success:
+                    data = response.json()
+                    if args.json_output:
+                        _print_json(data, args.pretty)
+                    else:
+                        _print_human_nack(data)
                     return EXIT_SUCCESS
                 return _handle_response_error(response)
 
