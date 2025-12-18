@@ -62,7 +62,11 @@ class RelayDiscordClient(discord.Client):
         is_dm = isinstance(message.channel, discord.DMChannel)
         channel_id = str(message.channel.id) if message.channel else None
 
-        if not is_dm and channel_id not in self._bot_config.channel_allowlist:
+        if (
+            not is_dm
+            and not self._bot_config.allow_all_channels
+            and channel_id not in self._bot_config.channel_allowlist
+        ):
             # Not ingesting from this channel.
             return
 

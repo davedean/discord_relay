@@ -30,7 +30,7 @@
 **Core components**
 1. `discord_ingest`: `discord.py` client(s) that listen to:
    - DMs to the bot account.
-   - Guild channel messages where the bot is present (configurable allowlist per bot).
+   - Guild channel messages where the bot is present (configurable allowlist per bot, or allow all).
 2. `router`: applies routing rules to decide which backend bot(s) receive each incoming Discord message.
 3. `queue_store`: persists messages and per-backend delivery state.
 4. `rest_api`: backend-facing API (FastAPI recommended).
@@ -50,6 +50,7 @@ Use a single config file (e.g., `config.yaml`) as the source of truth for Discor
   - `name`
   - `token` (string) OR `token_env` (env var name)
   - `enabled`
+  - `allow_all_channels` (boolean; if true, ingest all guild channels)
   - `channel_allowlist` (list of channel IDs; empty = no guild ingest)
 - `backend_bots[]`
   - `id` (string, stable; used in deliveries)
@@ -81,6 +82,7 @@ discord_bots:
     name: "Discord Bot A"
     token_env: "DISCORD_TOKEN_A"
     enabled: true
+    allow_all_channels: false
     channel_allowlist: ["123456789012345678"]
 
 backend_bots:
@@ -148,7 +150,7 @@ Use SQLite with clear upgrade path (e.g., `sqlalchemy` + Alembic migrations).
 - Scopes:
   - `dm_user`: DM messages from a specific Discord user ID
   - `channel`: messages in a specific channel ID
-  - `guild`: any message in a guild ID (still subject to `channel_allowlist` to ingest at all)
+  - `guild`: any message in a guild ID (still subject to `channel_allowlist` unless `allow_all_channels` is true)
 - Unmatched behavior (MVP): drop (do not enqueue) unless `default_backend_bot_id` configured for that Discord bot.
 - Future: optional fan-out routes.
 
@@ -250,7 +252,7 @@ Use FastAPI + Uvicorn. All endpoints require backend bot API key.
 - `POST /v1/messages/send` forwards validated payloads to `DiscordManager.send_text` and returns Discord’s message ID; self-messages are ignored by the guild/DM handler filters.
 
 ### Milestone 3 — Multi-bot support + routing ✅
-- `RoutingTable` (`src/relay_server/routing.py`) enforces precedence across scopes and defaults, while `DiscordManager` iterates every enabled bot/token and honors each bot’s `channel_allowlist`.
+- `RoutingTable` (`src/relay_server/routing.py`) enforces precedence across scopes and defaults, while `DiscordManager` iterates every enabled bot/token and honors each bot’s `channel_allowlist` unless `allow_all_channels` is set.
 
 ### Milestone 4 — Hardening (partial) ⚠️
 - API key auth is implemented in `src/relay_server/auth.py` and used by every endpoint, with logging configured during startup.

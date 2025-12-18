@@ -12,6 +12,7 @@ discord_bots:
     name: "Discord Bot A"
     token_env: "DISCORD_TOKEN_A"
     enabled: true
+    allow_all_channels: false
     channel_allowlist:
       - "123456789012345678"
 

@@ -32,6 +32,7 @@ class DiscordBotConfig(BaseModel):
     token: Optional[str] = None
     token_env: Optional[str] = None
     enabled: bool = True
+    allow_all_channels: bool = False
     channel_allowlist: List[str] = Field(default_factory=list)
 
     @field_validator("channel_allowlist", mode="before")
