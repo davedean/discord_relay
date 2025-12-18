@@ -1,4 +1,6 @@
  plans
  __pycache__
  */__pycache__
+ **/__pycache__
  *.egg-info/
+ **/*.egg-info/
