@@ -21,6 +21,16 @@ backend_bots:
     name: "Backend Alpha"
     api_key: "dev-only-change-me"
     enabled: true
+    # Optional: webhook "nudge" for push-style processing.
+    # If set, the relay will persist and deliver signed webhook notifications
+    # whenever new messages are enqueued for this backend bot.
+    # webhook:
+    #   url: "https://coordinator.example.com/relay/nudge"
+    #   secret_env: "RELAY_WEBHOOK_SECRET_BACKEND_ALPHA"
+    #   send_debounce_seconds: 2
+    #   request_timeout_seconds: 3
+    #   max_retries: 5
+    #   retry_backoff_seconds: [1, 2, 5, 10, 30]
 
 routing:
   mode: "first_match"

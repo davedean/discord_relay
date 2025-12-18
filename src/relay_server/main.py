@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import os
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from .schemas import (
     SendMessageRequest,
     SendMessageResponse,
 )
+from .webhooks import WebhookDispatcher
 
 LOG = logging.getLogger("relay")
 
@@ -34,16 +36,30 @@ class RelayState:
     auth_service: AuthService
     discord_manager: DiscordManager
     discord_bots: dict[str, DiscordBotConfig]
+    webhook_dispatcher: WebhookDispatcher | None
 
 
 def create_state(config_path: Optional[str] = None) -> RelayState:
     loaded = load_config(config_path)
     session_factory = create_session_factory(loaded.data.storage.database_url)
-    queue_service = QueueService(session_factory)
+    webhook_debounce_seconds = {
+        bot.id: bot.webhook.send_debounce_seconds
+        for bot in loaded.data.backend_bots
+        if bot.enabled and bot.webhook is not None
+    }
+    queue_service = QueueService(session_factory, webhook_debounce_seconds=webhook_debounce_seconds)
     routing = RoutingTable(loaded.data)
     auth_service = AuthService(loaded.data)
     discord_manager = DiscordManager(loaded.data, routing, queue_service)
     discord_bots = {bot.id: bot for bot in loaded.data.discord_bots if bot.enabled}
+    backend_webhooks = {
+        bot.id: bot.webhook
+        for bot in loaded.data.backend_bots
+        if bot.enabled and bot.webhook is not None
+    }
+    webhook_dispatcher = (
+        WebhookDispatcher(session_factory, backend_webhooks) if backend_webhooks else None
+    )
 
     return RelayState(
         loaded_config=loaded,
@@ -52,20 +68,20 @@ def create_state(config_path: Optional[str] = None) -> RelayState:
         auth_service=auth_service,
         discord_manager=discord_manager,
         discord_bots=discord_bots,
+        webhook_dispatcher=webhook_dispatcher,
     )
 
 
-def create_app(config_path: Optional[str] = None, *, start_discord: bool = True) -> FastAPI:
+def create_app(
+    config_path: Optional[str] = None,
+    *,
+    start_discord: bool = True,
+    start_webhooks: bool = True,
+) -> FastAPI:
     state = create_state(config_path)
 
-    app = FastAPI(
-        title="Discord Messages Relay",
-        version="0.1.0",
-    )
-    app.state.relay_state = state
-
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
         logging.basicConfig(
             level=state.loaded_config.data.server.log_level,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -74,16 +90,27 @@ def create_app(config_path: Optional[str] = None, *, start_discord: bool = True)
             await state.discord_manager.start()
         else:
             LOG.info("Skipping Discord startup (start_discord=False)")
+        if start_webhooks and state.webhook_dispatcher:
+            await state.webhook_dispatcher.start()
         LOG.info(
             "Relay server started using config %s",
             state.loaded_config.path,
         )
+        try:
+            yield
+        finally:
+            if start_discord:
+                await state.discord_manager.stop()
+            if start_webhooks and state.webhook_dispatcher:
+                await state.webhook_dispatcher.stop()
+            LOG.info("Relay server stopped")
 
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        if start_discord:
-            await state.discord_manager.stop()
-        LOG.info("Relay server stopped")
+    app = FastAPI(
+        title="Discord Messages Relay",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    app.state.relay_state = state
 
     def get_state(request: Request) -> RelayState:
         return request.app.state.relay_state
@@ -190,14 +217,16 @@ def _build_default_app() -> FastAPI:
             "Relay config missing at %s (set RELAY_CONFIG). Using placeholder app.",
             config_path or "config.yaml",
         )
-        placeholder = FastAPI(title="Discord Relay (config error)")
 
-        @placeholder.on_event("startup")
-        async def _fail_startup() -> None:
+        @asynccontextmanager
+        async def fail_lifespan(_: FastAPI):
             raise RuntimeError(
                 "Relay configuration missing. Set RELAY_CONFIG or provide config.yaml "
                 "before importing relay_server.main:app."
             )
+            yield  # pragma: no cover
+
+        placeholder = FastAPI(title="Discord Relay (config error)", lifespan=fail_lifespan)
 
         return placeholder
 

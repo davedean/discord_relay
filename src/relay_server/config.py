@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -61,6 +63,7 @@ class BackendBotConfig(BaseModel):
     api_key: Optional[str] = None
     api_key_env: Optional[str] = None
     enabled: bool = True
+    webhook: Optional["WebhookConfig"] = None
 
     def resolved_api_key(self) -> str:
         if self.api_key:
@@ -72,6 +75,51 @@ class BackendBotConfig(BaseModel):
         raise ConfigError(
             f"Backend bot '{self.id}' is missing an API key. "
             "Provide 'api_key' or set the referenced 'api_key_env'."
+        )
+
+
+class WebhookConfig(BaseModel):
+    url: str
+    secret: Optional[str] = None
+    secret_env: Optional[str] = None
+    send_debounce_seconds: float = 0.0
+    request_timeout_seconds: float = 3.0
+    max_retries: int = 5
+    retry_backoff_seconds: List[float] = Field(default_factory=lambda: [1, 2, 5, 10, 30])
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("webhook.url must be an http(s) URL")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_secret_and_limits(self) -> "WebhookConfig":
+        if not self.secret and not self.secret_env:
+            raise ValueError("webhook.secret or webhook.secret_env is required")
+        if not math.isfinite(self.send_debounce_seconds) or self.send_debounce_seconds < 0:
+            raise ValueError("webhook.send_debounce_seconds must be >= 0")
+        if not math.isfinite(self.request_timeout_seconds) or self.request_timeout_seconds <= 0:
+            raise ValueError("webhook.request_timeout_seconds must be > 0")
+        if self.max_retries < 0:
+            raise ValueError("webhook.max_retries must be >= 0")
+        if not self.retry_backoff_seconds:
+            raise ValueError("webhook.retry_backoff_seconds cannot be empty")
+        if any((not math.isfinite(v) or v <= 0) for v in self.retry_backoff_seconds):
+            raise ValueError("webhook.retry_backoff_seconds entries must be > 0")
+        return self
+
+    def resolved_secret(self) -> str:
+        if self.secret:
+            return self.secret
+        if self.secret_env:
+            env_value = os.getenv(self.secret_env)
+            if env_value:
+                return env_value
+        raise ConfigError(
+            "Webhook is missing a secret. Provide 'secret' or set the referenced 'secret_env'."
         )
 
 

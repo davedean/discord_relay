@@ -6,6 +6,7 @@ Python implementation of the relay service described in `plans/discord-messages-
 - FastAPI REST API (`/v1/messages/pending`, `/v1/messages/send`, `/v1/health`).
 - YAML configuration (see `config.example.yaml`).
 - SQLite-backed queue with per-backend delivery tracking.
+- Optional persisted webhook nudges per backend bot (`backend_bots[].webhook`).
 - Discord gateway ingestion with channel allowlists and DM support.
 
 ## Requirements

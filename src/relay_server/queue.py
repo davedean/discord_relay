@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import List, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Delivery, DeliveryState, DiscordMessage
+from .models import Delivery, DeliveryState, DiscordMessage, WebhookNudge, WebhookNudgeState
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -37,8 +40,14 @@ class DeliveryRecord:
 class QueueService:
     """Encapsulates queue persistence with async-friendly helpers."""
 
-    def __init__(self, session_factory: sessionmaker):
+    def __init__(
+        self,
+        session_factory: sessionmaker,
+        *,
+        webhook_debounce_seconds: Dict[str, float] | None = None,
+    ):
         self._session_factory = session_factory
+        self._webhook_debounce_seconds = webhook_debounce_seconds or {}
 
     async def enqueue_message(
         self,
@@ -46,19 +55,28 @@ class QueueService:
         payload: DiscordMessageRecord,
         dedupe_key: str,
     ) -> None:
-        await asyncio.to_thread(
+        inserted = await asyncio.to_thread(
             self._enqueue_message_sync,
             backend_bot_id,
             payload,
             dedupe_key,
         )
+        debounce = self._webhook_debounce_seconds.get(backend_bot_id)
+        if inserted and debounce is not None:
+            await asyncio.to_thread(
+                self._schedule_webhook_nudge_sync,
+                backend_bot_id,
+                payload.discord_bot_id,
+                dedupe_key,
+                debounce,
+            )
 
     def _enqueue_message_sync(
         self,
         backend_bot_id: str,
         payload: DiscordMessageRecord,
         dedupe_key: str,
-    ) -> None:
+    ) -> bool:
         session: Session
         session = self._session_factory()
         try:
@@ -81,9 +99,60 @@ class QueueService:
             )
             session.add_all([message, delivery])
             session.commit()
+            return True
         except IntegrityError:
             session.rollback()
             # Duplicate message (dedupe key). Ignore.
+            return False
+        finally:
+            session.close()
+
+    def _schedule_webhook_nudge_sync(
+        self,
+        backend_bot_id: str,
+        discord_bot_id: str,
+        dedupe_key: str,
+        debounce_seconds: float,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        next_attempt_at = now + timedelta(seconds=max(0.0, debounce_seconds))
+        session: Session = self._session_factory()
+        try:
+            nudge: WebhookNudge | None = (
+                session.execute(
+                    select(WebhookNudge).where(WebhookNudge.backend_bot_id == backend_bot_id)
+                )
+                .scalars()
+                .first()
+            )
+            if not nudge:
+                nudge = WebhookNudge(
+                    backend_bot_id=backend_bot_id,
+                    discord_bot_id=discord_bot_id,
+                    last_dedupe_key=dedupe_key,
+                    state=WebhookNudgeState.PENDING,
+                    attempts=0,
+                    next_attempt_at=next_attempt_at,
+                    last_error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(nudge)
+            else:
+                nudge.discord_bot_id = discord_bot_id
+                nudge.last_dedupe_key = dedupe_key
+                nudge.next_attempt_at = next_attempt_at
+                nudge.updated_at = now
+                if nudge.state == WebhookNudgeState.FAILED:
+                    nudge.state = WebhookNudgeState.PENDING
+                    nudge.attempts = 0
+                    nudge.last_error = None
+                if nudge.state == WebhookNudgeState.SENDING:
+                    nudge.state = WebhookNudgeState.PENDING
+            session.commit()
+        except Exception:
+            session.rollback()
+            LOG.exception("Failed to schedule webhook nudge for backend_bot_id=%s", backend_bot_id)
         finally:
             session.close()
 

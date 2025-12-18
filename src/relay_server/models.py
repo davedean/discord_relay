@@ -12,6 +12,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     create_engine,
@@ -83,6 +84,38 @@ Index(
     DiscordMessage.discord_message_id,
     unique=True,
 )
+
+
+class WebhookNudgeState(str, enum.Enum):
+    PENDING = "pending"
+    SENDING = "sending"
+    FAILED = "failed"
+
+
+class WebhookNudge(Base):
+    __tablename__ = "webhook_nudges"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    backend_bot_id: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    discord_bot_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_dedupe_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[WebhookNudgeState] = mapped_column(
+        Enum(WebhookNudgeState), nullable=False, default=WebhookNudgeState.PENDING, index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 def create_session_factory(database_url: str) -> sessionmaker:
