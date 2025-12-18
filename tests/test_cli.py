@@ -83,3 +83,42 @@ def test_resolve_connection_requires_backend_id(tmp_path, monkeypatch):
     with pytest.raises(CLIError) as exc:
         resolve_connection(args)
     assert "--backend-id" in str(exc.value)
+
+
+def test_parse_args_lease_command():
+    from relay_client.cli import parse_args
+
+    args = parse_args(["lease", "--limit", "10", "--include-history"])
+    assert args.command == "lease"
+    assert args.limit == 10
+    assert args.include_history is True
+    assert args.lease_seconds == 300  # default
+
+
+def test_parse_args_ack_command():
+    from relay_client.cli import parse_args
+
+    args = parse_args(["ack", "--delivery-ids", "id1", "id2", "--lease-id", "lease123"])
+    assert args.command == "ack"
+    assert args.delivery_ids == ["id1", "id2"]
+    assert args.lease_id == "lease123"
+
+
+def test_parse_args_nack_command():
+    from relay_client.cli import parse_args
+
+    args = parse_args(
+        [
+            "nack",
+            "--delivery-ids",
+            "id1",
+            "--lease-id",
+            "lease123",
+            "--reason",
+            "failed",
+        ]
+    )
+    assert args.command == "nack"
+    assert args.delivery_ids == ["id1"]
+    assert args.lease_id == "lease123"
+    assert args.reason == "failed"
