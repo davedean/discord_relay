@@ -329,6 +329,20 @@ def _try_load_config(
     config_path = args.config or os.getenv("RELAY_CONFIG")
     try:
         if config_path:
+            if args.config:
+                candidate = Path(config_path).expanduser()
+                if candidate.exists():
+                    return config_loader(config_path)
+                env_path = os.getenv("RELAY_CONFIG")
+                if env_path:
+                    env_candidate = Path(env_path).expanduser()
+                    if env_candidate.exists():
+                        if not args.quiet:
+                            print(
+                                "Warning: --config does not exist; falling back to RELAY_CONFIG.",
+                                file=sys.stderr,
+                            )
+                        return config_loader(env_path)
             return config_loader(config_path)
         return config_loader(None)
     except ConfigError:
