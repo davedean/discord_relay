@@ -38,6 +38,14 @@ export RELAY_START_WEBHOOKS=0
 uvicorn relay_server.main:app --host 0.0.0.0 --port 8080
 ```
 
+### Docker notes (SQLite path)
+When running via Docker, prefer an absolute SQLite path that lives in the mounted config volume, e.g.:
+```yaml
+storage:
+  database_url: "sqlite:////config/relay.db"
+```
+That keeps the database file alongside your `/config/config.yaml` on the host.
+
 ## REST API Quick Reference
 - `GET /v1/health` → `{ "status": "ok" }`
 - `GET /v1/auth/whoami` (requires `Authorization: Bearer <api_key>`)

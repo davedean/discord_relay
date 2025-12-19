@@ -17,6 +17,9 @@ from sqlalchemy import (
     Text,
     create_engine,
 )
+from pathlib import Path
+
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -146,6 +149,13 @@ class WebhookNudge(Base):
 
 def create_session_factory(database_url: str) -> sessionmaker:
     """Create the SQLAlchemy session factory."""
+    url = make_url(database_url)
+    if url.drivername.startswith("sqlite") and url.database:
+        if url.database not in {":memory:", ""}:
+            db_path = Path(url.database)
+            if not db_path.is_absolute():
+                db_path = Path.cwd() / db_path
+            db_path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(database_url, future=True)
     Base.metadata.create_all(bind=engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
