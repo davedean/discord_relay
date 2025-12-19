@@ -95,6 +95,20 @@ def test_parse_args_lease_command():
     assert args.lease_seconds == 300  # default
 
 
+def test_parse_args_health_command():
+    from relay_client.cli import parse_args
+
+    args = parse_args(["health"])
+    assert args.command == "health"
+
+
+def test_parse_args_whoami_command():
+    from relay_client.cli import parse_args
+
+    args = parse_args(["whoami"])
+    assert args.command == "whoami"
+
+
 def test_parse_args_ack_command():
     from relay_client.cli import parse_args
 

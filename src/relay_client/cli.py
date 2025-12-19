@@ -34,7 +34,7 @@ class ConnectionSettings:
 
     base_url: str
     api_key: str
-    backend_id: str
+    backend_id: str | None
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -91,7 +91,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    _build_retrieve_parser(subparsers)
+    _build_health_parser(subparsers)
+    _build_whoami_parser(subparsers)
     _build_send_parser(subparsers)
     _build_lease_parser(subparsers)
     _build_ack_parser(subparsers)
@@ -99,15 +100,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _build_retrieve_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
-    parser = subparsers.add_parser("retrieve", help="Fetch pending bot messages.")
-    parser.add_argument(
-        "--limit",
-        type=_parse_limit,
-        default=50,
-        help="Maximum number of pending messages (1-100, default 50).",
-    )
-    parser.set_defaults(command="retrieve")
+def _build_health_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
+    parser = subparsers.add_parser("health", help="Check relay server health.")
+    parser.set_defaults(command="health")
+
+
+def _build_whoami_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
+    parser = subparsers.add_parser("whoami", help="Verify auth and print backend identity.")
+    parser.set_defaults(command="whoami")
 
 
 def _build_send_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
@@ -262,16 +262,11 @@ def resolve_connection(
     backend_id = args.backend_id or os.getenv("RELAY_BACKEND_ID")
     if loaded and not backend_id:
         raise CLIError("--backend-id is required when --config is provided")
-    if not backend_id:
-        raise CLIError("Backend ID is required (--backend-id or RELAY_BACKEND_ID)")
 
-    base_url = args.base_url or os.getenv("RELAY_BASE_URL")
+    base_url = resolve_base_url(args, config_loader=config_loader)
     api_key = args.api_key or os.getenv("RELAY_API_KEY")
 
     if loaded:
-        server_url = loaded.data.server.base_url
-        if server_url:
-            base_url = base_url or server_url
         backend = next(
             (bot for bot in loaded.data.backend_bots if bot.id == backend_id),
             None,
@@ -284,15 +279,40 @@ def resolve_connection(
             except ConfigError as exc:
                 raise CLIError(str(exc)) from exc
 
-    base_url = (base_url or "http://127.0.0.1:8080").rstrip("/")
-    if not base_url:
-        raise CLIError("Base URL cannot be empty")
     if not api_key:
         raise CLIError(
             "API key is required (--api-key, RELAY_API_KEY, or backend config api_key)"
         )
 
     return ConnectionSettings(base_url=base_url, api_key=api_key, backend_id=backend_id)
+
+
+def resolve_base_url(
+    args: argparse.Namespace,
+    *,
+    config_loader: Callable[[str], LoadedConfig] | None = None,
+) -> str:
+    if config_loader is None:
+        config_loader = load_config
+
+    config_path = args.config or os.getenv("RELAY_CONFIG")
+    loaded = None
+    if config_path:
+        try:
+            loaded = config_loader(config_path)
+        except ConfigError as exc:
+            raise CLIError(f"Failed to load config: {exc}") from exc
+
+    base_url = args.base_url or os.getenv("RELAY_BASE_URL")
+    if loaded:
+        server_url = loaded.data.server.base_url
+        if server_url:
+            base_url = base_url or server_url
+
+    base_url = (base_url or "http://127.0.0.1:8080").rstrip("/")
+    if not base_url:
+        raise CLIError("Base URL cannot be empty")
+    return base_url
 
 
 def _build_headers(
@@ -334,18 +354,6 @@ def _extract_error_detail(response: httpx.Response) -> str:
 def _print_json(value: object, pretty: bool) -> None:
     dump = json.dumps(value, indent=2 if pretty else None)
     sys.stdout.write(dump + "\n")
-
-
-def _print_human_retrieve(messages: list[Mapping[str, object]]) -> None:
-    if not messages:
-        print("No pending messages.")
-        return
-    for message in messages:
-        delivery_id = message.get("delivery_id")
-        discord = message.get("discord_message") or {}
-        content = discord.get("content")
-        author = discord.get("source", {}).get("author_name", "unknown")
-        print(f"- {delivery_id}: {content!r} (from {author})")
 
 
 def _print_human_send(payload: Mapping[str, object]) -> None:
@@ -396,23 +404,17 @@ def _run_command(args: argparse.Namespace, settings: ConnectionSettings) -> int:
     headers = _build_headers(settings, args.request_id)
     try:
         with httpx.Client(base_url=settings.base_url, timeout=args.timeout) as client:
-            if args.command == "retrieve":
-                _log(
-                    f"Retrieving up to {args.limit} pending messages...",
-                    quiet=args.quiet,
-                )
-                response = client.get(
-                    "/v1/messages/pending",
-                    headers=headers,
-                    params={"limit": args.limit},
-                )
+            if args.command == "whoami":
+                _log("Checking auth...", quiet=args.quiet)
+                response = client.get("/v1/auth/whoami", headers=headers)
                 if response.is_success:
                     data = response.json()
-                    messages = data.get("messages", [])
                     if args.json_output:
-                        _print_json(messages, args.pretty)
+                        _print_json(data, args.pretty)
                     else:
-                        _print_human_retrieve(messages)
+                        backend_id = data.get("backend_id", "unknown")
+                        backend_name = data.get("backend_name", "unknown")
+                        print(f"{backend_id} ({backend_name})")
                     return EXIT_SUCCESS
                 return _handle_response_error(response)
 
@@ -526,6 +528,27 @@ def _run_command(args: argparse.Namespace, settings: ConnectionSettings) -> int:
 
 def _run(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.command == "health":
+        try:
+            base_url = resolve_base_url(args)
+        except CLIError as exc:
+            print(exc, file=sys.stderr)
+            return exc.exit_code
+        try:
+            with httpx.Client(base_url=base_url, timeout=args.timeout) as client:
+                resp = client.get("/v1/health")
+                if resp.is_success:
+                    data = resp.json()
+                    if args.json_output:
+                        _print_json(data, args.pretty)
+                    else:
+                        print(f"ok (config_path={data.get('config_path', 'n/a')})")
+                    return EXIT_SUCCESS
+                return _handle_response_error(resp)
+        except httpx.TimeoutException as exc:
+            return _handle_request_exception(exc)
+        except httpx.RequestError as exc:
+            return _handle_request_exception(exc)
     try:
         settings = resolve_connection(args)
     except CLIError as exc:

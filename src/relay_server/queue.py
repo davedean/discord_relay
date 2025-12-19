@@ -38,13 +38,6 @@ class DiscordMessageRecord:
 
 
 @dataclass(slots=True)
-class DeliveryRecord:
-    delivery_id: str
-    backend_bot_id: str
-    message: DiscordMessageRecord
-
-
-@dataclass(slots=True)
 class LeasedDeliveryRecord:
     delivery_id: str
     lease_id: str
@@ -173,68 +166,6 @@ class QueueService:
             LOG.exception(
                 "Failed to schedule webhook nudge for backend_bot_id=%s", backend_bot_id
             )
-        finally:
-            session.close()
-
-    async def fetch_and_mark_delivered(
-        self,
-        backend_bot_id: str,
-        limit: int,
-    ) -> List[DeliveryRecord]:
-        return await asyncio.to_thread(
-            self._fetch_and_mark_delivered_sync,
-            backend_bot_id,
-            limit,
-        )
-
-    def _fetch_and_mark_delivered_sync(
-        self,
-        backend_bot_id: str,
-        limit: int,
-    ) -> List[DeliveryRecord]:
-        session: Session = self._session_factory()
-        try:
-            deliveries: Sequence[Delivery] = (
-                session.execute(
-                    select(Delivery)
-                    .where(
-                        Delivery.backend_bot_id == backend_bot_id,
-                        Delivery.state == DeliveryState.PENDING,
-                    )
-                    .order_by(Delivery.created_at)
-                    .limit(limit)
-                )
-                .scalars()
-                .all()
-            )
-
-            now = datetime.now(timezone.utc)
-            result: List[DeliveryRecord] = []
-
-            for delivery in deliveries:
-                delivery.state = DeliveryState.DELIVERED
-                delivery.delivered_at = now
-                msg = delivery.message
-                result.append(
-                    DeliveryRecord(
-                        delivery_id=delivery.id,
-                        backend_bot_id=delivery.backend_bot_id,
-                        message=DiscordMessageRecord(
-                            discord_message_id=msg.discord_message_id,
-                            discord_bot_id=msg.discord_bot_id,
-                            author_id=msg.author_id,
-                            author_name=msg.author_name,
-                            channel_id=msg.channel_id,
-                            guild_id=msg.guild_id,
-                            is_dm=msg.is_dm,
-                            content=msg.content,
-                            timestamp=msg.timestamp,
-                        ),
-                    )
-                )
-
-            session.commit()
-            return result
         finally:
             session.close()
 

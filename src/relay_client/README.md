@@ -12,7 +12,7 @@ pip install httpx pyyaml
 
 ## Usage
 
-The client is invoked via `cli.py` and provides two main commands: `retrieve` and `send`.
+The client is invoked via `cli.py` (or the installed `relayctl` entrypoint) and supports health checks, leasing, acknowledgements, and sending messages.
 
 ### Configuration
 
@@ -37,18 +37,29 @@ You can configure the client using:
 
 ### Commands
 
-#### Retrieve Messages
+#### Health Check
 
-Fetch pending bot messages from the relay server:
+Check the relay server is reachable:
 
 ```bash
-python cli.py --config ../../config.yaml --backend-id backend_lmao retrieve
+python cli.py --config ../../config.yaml health
 ```
 
-Options:
-- `--limit`: Maximum number of messages (1-100, default: 50)
-- `--json/--no-json`: Output format (JSON default)
-- `--pretty`: Pretty-print JSON output
+#### Verify Auth (`whoami`)
+
+Verify the API key is accepted and print the backend identity:
+
+```bash
+python cli.py --config ../../config.yaml --backend-id backend_lmao whoami
+```
+
+#### Lease Messages
+
+Lease messages for processing (messages are only marked delivered after `ack`):
+
+```bash
+python cli.py --config ../../config.yaml --backend-id backend_lmao lease --limit 50 --lease-seconds 300
+```
 
 #### Send Messages
 
@@ -78,17 +89,22 @@ Optional:
 
 ### Example Workflow
 
-1. Retrieve pending messages:
+1. Lease messages:
 ```bash
-python cli.py --config ../../config.yaml --backend-id backend_lmao retrieve
+python cli.py --config ../../config.yaml --backend-id backend_lmao lease --limit 10
 ```
 
-2. Use the channel/user ID from retrieved messages to send replies:
+2. Send replies using the channel/user IDs in the leased messages:
 ```bash
 python cli.py --config ../../config.yaml --backend-id backend_lmao send \
   --discord-bot-id discord_lmao \
   --channel-id 1450655195850735707 \
   --content "Reply to message"
+```
+
+3. Acknowledge the deliveries you successfully processed:
+```bash
+python cli.py --config ../../config.yaml --backend-id backend_lmao ack --lease-id <lease_id> --delivery-ids <delivery_id> [<delivery_id> ...]
 ```
 
 ### Aliases
@@ -101,7 +117,7 @@ alias relayctl='python /path/to/cli.py --config /path/to/config.yaml --backend-i
 
 Then use:
 ```bash
-relayctl retrieve
+relayctl lease
 relayctl send --discord-bot-id discord_lmao --channel-id 123456 --content "Hello"
 ```
 

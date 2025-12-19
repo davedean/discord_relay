@@ -9,15 +9,14 @@ import os
 from dataclasses import dataclass
 from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 
 from .auth import AuthService, BackendIdentity
-from .config import AppConfig, ConfigError, DiscordBotConfig, LoadedConfig, load_config
+from .config import ConfigError, DiscordBotConfig, LoadedConfig, load_config
 from .discord_client import Destination as DiscordDestination
 from .discord_client import DiscordManager
 from .models import create_session_factory
 from .queue import (
-    DeliveryRecord,
     DiscordMessageRecord,
     LeasedDeliveryRecord,
     QueueService,
@@ -30,8 +29,6 @@ from .schemas import (
     LeaseMessagesResponse,
     LeasedMessage,
     NackRequest,
-    PendingMessage,
-    PendingMessagesResponse,
     SendMessageRequest,
     SendMessageResponse,
 )
@@ -177,22 +174,9 @@ def create_app(
             "config_path": str(relay_state.loaded_config.path),
         }
 
-    @app.get(
-        "/v1/messages/pending",
-        response_model=PendingMessagesResponse,
-    )
-    async def get_pending_messages(
-        limit: Annotated[int, Query(gt=0, le=100)] = 50,
-        backend: BackendIdentity = Depends(get_backend_identity),
-        relay_state: RelayState = Depends(get_state),
-    ) -> PendingMessagesResponse:
-        deliveries = await relay_state.queue_service.fetch_and_mark_delivered(
-            backend.id, limit
-        )
-        response = PendingMessagesResponse(
-            messages=[_delivery_to_schema(record) for record in deliveries]
-        )
-        return response
+    @app.get("/v1/auth/whoami")
+    async def whoami(backend: BackendIdentity = Depends(get_backend_identity)) -> dict[str, str]:
+        return {"backend_id": backend.id, "backend_name": backend.name}
 
     @app.post(
         "/v1/messages/send",
@@ -285,28 +269,6 @@ def create_app(
     return app
 
 
-def _delivery_to_schema(record: DeliveryRecord) -> PendingMessage:
-    msg: DiscordMessageRecord = record.message
-    source = {
-        "is_dm": msg.is_dm,
-        "guild_id": msg.guild_id,
-        "channel_id": msg.channel_id,
-        "author_id": msg.author_id,
-        "author_name": msg.author_name,
-    }
-    return PendingMessage(
-        delivery_id=record.delivery_id,
-        discord_bot_id=msg.discord_bot_id,
-        discord_message={
-            "discord_message_id": msg.discord_message_id,
-            "discord_bot_id": msg.discord_bot_id,
-            "timestamp": msg.timestamp,
-            "content": msg.content,
-            "source": source,
-        },
-    )
-
-
 def _leased_delivery_to_schema(record: LeasedDeliveryRecord) -> LeasedMessage:
     msg: DiscordMessageRecord = record.message
     source = {
@@ -348,10 +310,28 @@ def _message_record_to_schema(record: DiscordMessageRecord) -> DiscordMessagePay
     )
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise RuntimeError(f"Invalid {name}={raw!r} (expected a boolean-ish value)")
+
+
 def _build_default_app() -> FastAPI:
     config_path = os.getenv("RELAY_CONFIG")
     try:
-        return create_app(config_path)
+        start_discord = _env_bool("RELAY_START_DISCORD", True)
+        start_webhooks = _env_bool("RELAY_START_WEBHOOKS", True)
+        return create_app(
+            config_path,
+            start_discord=start_discord,
+            start_webhooks=start_webhooks,
+        )
     except ConfigError as exc:
         LOG.warning(
             "Relay config missing at %s (set RELAY_CONFIG). Using placeholder app.",
@@ -373,7 +353,7 @@ def _build_default_app() -> FastAPI:
         return placeholder
 
 
-app = None  # Lazy initialization - only create when explicitly needed
+app = _build_default_app()
 
 
 if __name__ == "__main__":

@@ -24,16 +24,6 @@ class DiscordMessagePayload(BaseModel):
     source: MessageSource
 
 
-class PendingMessage(BaseModel):
-    delivery_id: str
-    discord_bot_id: str
-    discord_message: DiscordMessagePayload
-
-
-class PendingMessagesResponse(BaseModel):
-    messages: list[PendingMessage]
-
-
 class Destination(BaseModel):
     type: Literal["dm", "channel"]
     user_id: Optional[str] = Field(default=None, description="Required when type=dm")

@@ -22,10 +22,36 @@ def test_queue_enqueue_and_fetch(tmp_path):
     )
 
     asyncio.run(queue.enqueue_message("backend_alpha", payload, dedupe_key="discord_a:1"))
-    messages = asyncio.run(queue.fetch_and_mark_delivered("backend_alpha", limit=10))
-    assert len(messages) == 1
-    assert messages[0].message.content == "hello"
+    leased, history = asyncio.run(
+        queue.lease_messages(
+            "backend_alpha",
+            limit=10,
+            lease_seconds=300,
+            include_conversation_history=False,
+            conversation_history_limit=20,
+        )
+    )
+    assert history == []
+    assert len(leased) == 1
+    assert leased[0].message.content == "hello"
 
-    # Second fetch should be empty because already marked delivered.
-    messages = asyncio.run(queue.fetch_and_mark_delivered("backend_alpha", limit=10))
-    assert messages == []
+    acknowledged = asyncio.run(
+        queue.acknowledge_deliveries(
+            "backend_alpha",
+            delivery_ids=[leased[0].delivery_id],
+            lease_id=leased[0].lease_id,
+        )
+    )
+    assert acknowledged == 1
+
+    # Second lease should be empty because already delivered.
+    leased, _ = asyncio.run(
+        queue.lease_messages(
+            "backend_alpha",
+            limit=10,
+            lease_seconds=300,
+            include_conversation_history=False,
+            conversation_history_limit=20,
+        )
+    )
+    assert leased == []

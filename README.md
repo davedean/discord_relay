@@ -1,9 +1,9 @@
 # Discord Messages Relay
 
-Python implementation of the relay service described in `plans/discord-messages-relay.md`. The service listens to one or more Discord bots, stores incoming messages, and exposes a REST API for backend bots to retrieve pending messages and send replies.
+Python implementation of the relay service described in `plans/discord-messages-relay.md`. The service listens to one or more Discord bots, stores incoming messages, and exposes a REST API for backend bots to lease messages for processing and send replies.
 
 ## Features
-- FastAPI REST API (`/v1/messages/pending`, `/v1/messages/send`, `/v1/health`).
+- FastAPI REST API (`/v1/messages/lease`, `/v1/messages/ack`, `/v1/messages/send`, `/v1/health`).
 - YAML configuration (see `config.example.yaml`).
 - SQLite-backed queue with per-backend delivery tracking.
 - Optional persisted webhook nudges per backend bot (`backend_bots[].webhook`).
@@ -29,9 +29,26 @@ uvicorn relay_server.main:app --host 0.0.0.0 --port 8080
 
 During startup the server automatically launches each enabled Discord bot from the config.
 
+### API-only mode (no Discord connections)
+Useful for smoke-testing the API container/config without Discord tokens:
+```bash
+export RELAY_CONFIG=./config.yaml
+export RELAY_START_DISCORD=0
+export RELAY_START_WEBHOOKS=0
+uvicorn relay_server.main:app --host 0.0.0.0 --port 8080
+```
+
 ## REST API Quick Reference
 - `GET /v1/health` → `{ "status": "ok" }`
-- `GET /v1/messages/pending?limit=50` (requires `Authorization: Bearer <api_key>`)
+- `GET /v1/auth/whoami` (requires `Authorization: Bearer <api_key>`)
+- `POST /v1/messages/lease` with body:
+  ```json
+  { "limit": 50, "lease_seconds": 300 }
+  ```
+- `POST /v1/messages/ack` with body:
+  ```json
+  { "lease_id": "…", "delivery_ids": ["…"] }
+  ```
 - `POST /v1/messages/send` with body:
   ```json
   {
@@ -42,9 +59,9 @@ During startup the server automatically launches each enabled Discord bot from t
   ```
 
 ## Notes
-- Messages are marked delivered as soon as they are retrieved (consume-on-read).
+- Backends should use `lease → ack/nack`; messages are only marked delivered on `ack`.
 - Unmatched routes are dropped unless you specify `routing.defaults` per Discord bot.
-- For production use, consider moving secrets out of YAML and enabling leasing/acknowledgements as described in the plans.
+- For production use, consider moving secrets out of YAML and enabling webhook nudges (push-triggered processing).
 
 ## Running tests
 Install dev dependencies and run pytest:

@@ -10,7 +10,7 @@ services:
       RELAY_CONFIG: /config/config.yaml
       PYTHONUNBUFFERED: "1"
     ports:
-      - "4545:4545"
+      - "8080:8080"
     command: >
       sh -c "pip install -e . &&
-             uvicorn relay_server.main:app --host 0.0.0.0 --port 4545"
+             uvicorn relay_server.main:app --host 0.0.0.0 --port 8080"

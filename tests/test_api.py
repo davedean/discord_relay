@@ -35,44 +35,27 @@ def _config_dict(db_path: str) -> dict:
     }
 
 
-def test_pending_requires_auth(write_config, tmp_path):
+def test_whoami_requires_auth(write_config, tmp_path):
     cfg = _config_dict(tmp_path / "relay.db")
     path = write_config(cfg)
     app = create_app(str(path), start_discord=False)
     client = TestClient(app)
     with client:
-        resp = client.get("/v1/messages/pending")
+        resp = client.get("/v1/auth/whoami")
         assert resp.status_code == 401
 
 
-def test_pending_returns_messages(write_config, tmp_path):
+def test_whoami_returns_identity(write_config, tmp_path):
     cfg = _config_dict(tmp_path / "relay.db")
     path = write_config(cfg)
     app = create_app(str(path), start_discord=False)
-    state = app.state.relay_state
-
-    payload = DiscordMessageRecord(
-        discord_message_id="55",
-        discord_bot_id="discord_a",
-        author_id="user1",
-        author_name="User One",
-        channel_id=None,
-        guild_id=None,
-        is_dm=True,
-        content="hello relay",
-        timestamp=datetime.now(timezone.utc),
-    )
-    asyncio.run(
-        state.queue_service.enqueue_message("backend_alpha", payload, "discord_a:55")
-    )
-
     client = TestClient(app)
     headers = {"Authorization": "Bearer alpha-key"}
     with client:
-        resp = client.get("/v1/messages/pending", headers=headers)
+        resp = client.get("/v1/auth/whoami", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert data["messages"][0]["discord_message"]["content"] == "hello relay"
+        assert data["backend_id"] == "backend_alpha"
 
 
 def test_send_message_uses_discord_manager(write_config, tmp_path):
@@ -252,9 +235,22 @@ def test_conversation_history_included_when_requested(write_config, tmp_path):
     headers = {"Authorization": "Bearer alpha-key"}
 
     with client:
-        # First consume the historical messages using the old API
-        resp = client.get("/v1/messages/pending?limit=10", headers=headers)
-        assert resp.status_code == 200
+        # First lease+ack the historical messages so they are not pending anymore.
+        lease_payload = {
+            "limit": 10,
+            "lease_seconds": 300,
+            "include_conversation_history": False,
+        }
+        lease_resp = client.post("/v1/messages/lease", json=lease_payload, headers=headers)
+        assert lease_resp.status_code == 200
+        lease_data = lease_resp.json()
+        delivery_ids = [msg["delivery_id"] for msg in lease_data["messages"]]
+        assert delivery_ids
+        lease_id = lease_data["messages"][0]["lease_id"]
+
+        ack_payload = {"delivery_ids": delivery_ids, "lease_id": lease_id}
+        ack_resp = client.post("/v1/messages/ack", json=ack_payload, headers=headers)
+        assert ack_resp.status_code == 200
 
         # Now add a new message to lease
         new_payload = DiscordMessageRecord(
