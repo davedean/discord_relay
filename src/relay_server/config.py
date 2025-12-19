@@ -202,7 +202,8 @@ class LoadedConfig:
 
 def load_config(path: Optional[str]) -> LoadedConfig:
     """Load and validate the YAML config file."""
-    candidate = Path(path or os.getenv("RELAY_CONFIG", "config.yaml"))
+    raw_path = path or os.getenv("RELAY_CONFIG", "config.yaml")
+    candidate = Path(raw_path).expanduser()
     if not candidate.exists():
         raise ConfigError(f"Config file not found: {candidate}")
     with candidate.open("r", encoding="utf-8") as fh:
