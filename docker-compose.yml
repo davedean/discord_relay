@@ -4,8 +4,10 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+      - ~/.config/discord_relay/:/config/
+      - ~/.config/discord_relay/:/root/.config/discord_relay/
     environment:
-      RELAY_CONFIG: /app/config.yaml
+      RELAY_CONFIG: /config/config.yaml
       PYTHONUNBUFFERED: "1"
     ports:
       - "4545:4545"

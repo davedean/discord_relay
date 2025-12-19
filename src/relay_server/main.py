@@ -373,7 +373,7 @@ def _build_default_app() -> FastAPI:
         return placeholder
 
 
-app = _build_default_app()
+app = None  # Lazy initialization - only create when explicitly needed
 
 
 if __name__ == "__main__":
