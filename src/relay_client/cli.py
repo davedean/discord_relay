@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional
 
 import httpx
@@ -99,6 +100,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     _build_health_parser(subparsers)
     _build_whoami_parser(subparsers)
+    _build_debug_config_parser(subparsers)
     _build_send_parser(subparsers)
     _build_lease_parser(subparsers)
     _build_ack_parser(subparsers)
@@ -114,6 +116,14 @@ def _build_health_parser(subparsers: argparse._SubParsersAction) -> None:  # typ
 def _build_whoami_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
     parser = subparsers.add_parser("whoami", help="Verify auth and print backend identity.")
     parser.set_defaults(command="whoami")
+
+
+def _build_debug_config_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
+    parser = subparsers.add_parser(
+        "debug-config",
+        help="Print resolved config path candidates.",
+    )
+    parser.set_defaults(command="debug-config")
 
 
 def _build_send_parser(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[arg-type]
@@ -548,6 +558,29 @@ def _run_command(args: argparse.Namespace, settings: ConnectionSettings) -> int:
 
 def _run(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.command == "debug-config":
+        raw_env = os.getenv("RELAY_CONFIG")
+        raw_path = args.config or raw_env
+        candidates = []
+        if raw_path:
+            candidates.append(Path(raw_path).expanduser())
+        else:
+            candidates.append(Path("config.yaml"))
+            candidates.append(Path("~/.config/discord_relay/config.yaml").expanduser())
+        payload = {
+            "cwd": os.getcwd(),
+            "relay_config_env": raw_env,
+            "candidates": [str(path) for path in candidates],
+            "exists": [path.exists() for path in candidates],
+        }
+        if args.json_output:
+            _print_json(payload, args.pretty)
+        else:
+            print(f"cwd={payload['cwd']}")
+            print(f"RELAY_CONFIG={payload['relay_config_env']!r}")
+            for path, exists in zip(payload["candidates"], payload["exists"], strict=False):
+                print(f"- {path} (exists={exists})")
+        return EXIT_SUCCESS
     if args.command == "health":
         try:
             base_url = resolve_base_url(args)

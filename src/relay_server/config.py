@@ -222,4 +222,9 @@ def load_config(path: Optional[str]) -> LoadedConfig:
             raise ConfigError(f"Invalid config: {exc}") from exc
         return LoadedConfig(path=candidate, data=config)
 
-    raise ConfigError(f"Config file not found: {candidates[0]}")
+    checked = ", ".join(str(path) for path in candidates)
+    raise ConfigError(
+        "Config file not found. "
+        f"Checked: {checked}. "
+        f"RELAY_CONFIG={raw_env!r}"
+    )
