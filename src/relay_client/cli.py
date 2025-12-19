@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 import sys
@@ -39,6 +40,11 @@ class ConnectionSettings:
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="relayctl", description="Relay REST client.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_resolve_version(),
+    )
     parser.add_argument(
         "--config",
         help="Path to relay config YAML (falls back to RELAY_CONFIG).",
@@ -251,13 +257,7 @@ def resolve_connection(
     if config_loader is None:
         config_loader = load_config
 
-    config_path = args.config or os.getenv("RELAY_CONFIG")
-    loaded = None
-    if config_path:
-        try:
-            loaded = config_loader(config_path)
-        except ConfigError as exc:
-            raise CLIError(f"Failed to load config: {exc}") from exc
+    loaded = _try_load_config(args, config_loader=config_loader)
 
     backend_id = args.backend_id or os.getenv("RELAY_BACKEND_ID")
     if loaded and not backend_id:
@@ -295,13 +295,7 @@ def resolve_base_url(
     if config_loader is None:
         config_loader = load_config
 
-    config_path = args.config or os.getenv("RELAY_CONFIG")
-    loaded = None
-    if config_path:
-        try:
-            loaded = config_loader(config_path)
-        except ConfigError as exc:
-            raise CLIError(f"Failed to load config: {exc}") from exc
+    loaded = _try_load_config(args, config_loader=config_loader)
 
     base_url = args.base_url or os.getenv("RELAY_BASE_URL")
     if loaded:
@@ -313,6 +307,32 @@ def resolve_base_url(
     if not base_url:
         raise CLIError("Base URL cannot be empty")
     return base_url
+
+
+def _try_load_config(
+    args: argparse.Namespace,
+    *,
+    config_loader: Callable[[str], LoadedConfig] | None = None,
+) -> LoadedConfig | None:
+    if config_loader is None:
+        config_loader = load_config
+    config_path = args.config or os.getenv("RELAY_CONFIG")
+    try:
+        if config_path:
+            return config_loader(config_path)
+        return config_loader(None)
+    except ConfigError:
+        if config_path:
+            raise
+        return None
+
+
+def _resolve_version() -> str:
+    try:
+        version = importlib.metadata.version("discord-messages-relay")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return f"relayctl {version}"
 
 
 def _build_headers(

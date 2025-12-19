@@ -202,14 +202,24 @@ class LoadedConfig:
 
 def load_config(path: Optional[str]) -> LoadedConfig:
     """Load and validate the YAML config file."""
-    raw_path = path or os.getenv("RELAY_CONFIG", "config.yaml")
-    candidate = Path(raw_path).expanduser()
-    if not candidate.exists():
-        raise ConfigError(f"Config file not found: {candidate}")
-    with candidate.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
-    try:
-        config = AppConfig.model_validate(raw)
-    except Exception as exc:  # noqa: BLE001 - surfacing details
-        raise ConfigError(f"Invalid config: {exc}") from exc
-    return LoadedConfig(path=candidate, data=config)
+    raw_env = os.getenv("RELAY_CONFIG")
+    raw_path = path or raw_env
+    candidates: list[Path] = []
+    if raw_path:
+        candidates.append(Path(raw_path).expanduser())
+    else:
+        candidates.append(Path("config.yaml"))
+        candidates.append(Path("~/.config/discord_relay/config.yaml").expanduser())
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        with candidate.open("r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+        try:
+            config = AppConfig.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001 - surfacing details
+            raise ConfigError(f"Invalid config: {exc}") from exc
+        return LoadedConfig(path=candidate, data=config)
+
+    raise ConfigError(f"Config file not found: {candidates[0]}")
