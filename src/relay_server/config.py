@@ -226,5 +226,6 @@ def load_config(path: Optional[str]) -> LoadedConfig:
     raise ConfigError(
         "Config file not found. "
         f"Checked: {checked}. "
+        f"path_arg={path!r}. "
         f"RELAY_CONFIG={raw_env!r}"
     )

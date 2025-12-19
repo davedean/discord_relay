@@ -570,6 +570,9 @@ def _run(argv: Iterable[str] | None = None) -> int:
         payload = {
             "cwd": os.getcwd(),
             "relay_config_env": raw_env,
+            "args_config": args.config,
+            "raw_path": raw_path,
+            "cli_path": __file__,
             "candidates": [str(path) for path in candidates],
             "exists": [path.exists() for path in candidates],
         }
